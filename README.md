@@ -55,8 +55,6 @@ A comunicação entre os Pods ocorre por meio de um Headless Service, permitindo
 
 ![Visão geral do cluster Amazon EKS](docs/evidencias/eks-cluster-overview.png)
 
-> Adicione aqui a imagem da página 1 do relatório, que mostra o painel do Amazon EKS com o cluster `mysql-ha-cluster` ativo.
-
 ---
 
 ## Componentes da Arquitetura
@@ -124,7 +122,7 @@ O cluster foi configurado com **três nós de trabalho**, fornecendo uma base pa
 
 ![Nós do cluster e instâncias EC2](docs/evidencias/worker-nodes.png)
 
-> 📸 *Configuração dos nós do cluster e instâncias EC2 utilizadas.*
+>   *Configuração dos nós do cluster e instâncias EC2 utilizadas.*
 
 ### Nós de Trabalho
 
@@ -143,7 +141,7 @@ Durante a criação do cluster, foram utilizados componentes essenciais do ecoss
 
 ![Pods de Sistema](docs/evidencias/system-pods.png)
 
-> 📸 *Pods de sistema como aws-node, ebs-csi-node, ebs-csi-controller e coredns em execução.*
+>   *Pods de sistema como aws-node, ebs-csi-node, ebs-csi-controller e coredns em execução.*
 
 ---
 
@@ -161,7 +159,7 @@ Diferente de um `Deployment` (mais adequado para aplicações *stateless*), o `S
 
 ![StatefulSet do MySQL](docs/evidencias/statefulset-mysql.png)
 
-> 📸 *Visualização do StatefulSet do MySQL e suas respectivas réplicas.*
+*Visualização do StatefulSet do MySQL e suas respectivas réplicas.*
 
 ---
 
@@ -173,7 +171,7 @@ A `StorageClass` customizada `mysql-storage` foi utilizada para provisionar os v
 
 ![Status dos Volumes Persistentes](docs/evidencias/pvc-bound.png)
 
-> 📸 *Exibição dos volumes mysql-data-mysql-0, mysql-data-mysql-1 e mysql-data-mysql-2 com status Bound.*
+>   *Exibição dos volumes mysql-data-mysql-0, mysql-data-mysql-1 e mysql-data-mysql-2 com status Bound.*
 
 ---
 
@@ -193,7 +191,7 @@ Esse comportamento é essencial em ambientes de banco de dados replicado, pois c
 <img width="1190" height="416" alt="image" src="https://github.com/user-attachments/assets/a4921f97-43ca-46d4-b9b9-91738b2a75dd" />
 
 
-> 📸 *Endpoints e EndpointSlices associados ao serviço mysql.*
+>   *Endpoints e EndpointSlices associados ao serviço mysql.*
 
 ### Teste de DNS Interno
 
@@ -208,4 +206,102 @@ kubectl exec -it mysql-0 -- getent hosts mysql-2.mysql
 ### Instancias EC2
 - **Tipo de Instância:** Foram utilizadas instâncias do tipo **t3.medium**. Cada nó possui 2 vCPUs e 4 GiB de memória, configuração ideal para suportar tanto o orquestrador quanto os processos do MySQL.
 - **Quantidade de Nós:** O cluster foi configurado com um grupo de nós gerenciados contendo **3 instâncias**, garantindo que as três réplicas do banco de dados (mysql-0, mysql-1 e mysql-2) residam em máquinas físicas/virtuais distintas.
+
 ![EC2](docs/evidencias/Instancias-EC2.png)
+
+## Validação e Status da Replicação de Dados
+
+Para garantir a confiabilidade da arquitetura de alta disponibilidade, o cluster de banco de dados foi submetido a três etapas de validação técnica: consistência de identidades, integridade das threads de replicação e testes práticos de escrita/leitura.
+
+---
+
+### 1. Identificação Única dos Nós 
+
+O correto funcionamento da topologia Primário/Réplica no MySQL exige que cada instância possua uma identificação exclusiva (`server_id`). Através de um mapeamento dinâmico via ConfigMap/StatefulSet, as identidades foram injetadas de forma isolada e sequencial.
+
+![Verificação das IDs dos Servidores](docs/evidencias/server_id.png)
+
+> *Validação das propriedades de identificação em cada Pod do StatefulSet.*
+
+* **Nó Primário (`mysql-0`):** Configurado com `server_id = 1`.
+* **Primeira Réplica (`mysql-1`):** Configurado com `server_id = 2`.
+* **Segunda Réplica (`mysql-2`):** Configurado com `server_id = 3`.
+
+Esse isolamento impede conflitos no consumo e distribuição dos logs binários do cluster.
+
+---
+
+### 2. Status de Saúde da Replicação 
+
+A saúde do espelhamento de dados foi validada inspecionando o status interno do motor do MySQL em todas as frentes. O nó primário registra as transações ativas, enquanto os nós secundários leem e executam esses logs.
+
+![Status do Master e Slaves](docs/evidencias/replication-status.png)
+
+*Saída dos comandos SHOW MASTER STATUS e SHOW SLAVE STATUS demonstrando sincronismo ativo.*
+
+#### Análise Técnica dos Componentes:
+
+* **Nó Primário (`mysql-0`):** O comando `SHOW MASTER STATUS;` indica que o banco está gerando logs ativamente no arquivo binário `mysql-bin.000005`, utilizando controle de transações globais (**GTID**).
+* **Nós Secundários (`mysql-1` e `mysql-2`):** Ambas as réplicas apontam corretamente para o host do primário (`mysql-0.mysql`) através do Headless Service na porta `3306`.
+* **Canais de Sincronismo Saudáveis:** Ambas as réplicas exibem os dois parâmetros vitais com status positivo:
+  * `Slave_IO_Running: Yes` -> O Pod está conectado ao primário e copiando os logs de transação.
+  * `Slave_SQL_Running: Yes` -> O Pod está aplicando os logs copiados localmente em seu próprio storage EBS.
+
+---
+
+### 3. Teste Prático de Persistência e Replicação
+
+Este teste teve como objetivo validar, de forma prática, se os dados inseridos na instância primária do MySQL poderiam ser consultados posteriormente em uma réplica, utilizando a comunicação interna entre os Pods no Kubernetes.
+
+A escrita foi realizada no Pod `mysql-0`, enquanto a leitura foi validada no Pod `mysql-2`, sem execução de comandos de escrita diretamente na réplica.
+
+![Validação Prática da Replicação](docs/evidencias/data-replication-validation.png)
+
+> *Validação prática da replicação: inserção de dados no Pod `mysql-0` e consulta do registro replicado no Pod `mysql-2`.*
+
+#### Fluxo de Execução do Teste
+
+1. **Escrita no nó primário (`mysql-0`)**
+
+   No Pod `mysql-0`, foram executadas operações de criação de banco, criação de tabela e inserção de dados:
+
+   ```sql
+   CREATE DATABASE projetoK8s_HA;
+
+   USE projetoK8s_HA;
+
+   CREATE TABLE validacao (
+       id INT PRIMARY KEY,
+       mensagem VARCHAR(100)
+   );
+
+   INSERT INTO validacao VALUES 
+   (1, 'Dados inseridos no primario - AWS EKS');
+2. **Leitura no nó secundário (mysql-2)**
+   No Pod mysql-2, foi executada apenas uma consulta de leitura para verificar se o registro inserido no nó primário havia sido replicado:
+```sql
+USE projetoK8s_HA;
+
+SELECT * FROM validacao;
+```
+O registro inserido anteriormente no Pod mysql-0 foi retornado na consulta realizada pelo Pod mysql-2, indicando que a replicação entre as instâncias estava funcionando no cenário testado.
+
+#### Resultado Observado
+
+O teste demonstrou que os dados gravados na instância primária foram propagados para a réplica consultada. Isso confirma que a comunicação entre os Pods MySQL e o fluxo de replicação estavam operacionais durante a execução do experimento.
+
+#### Conclusão do Teste
+
+A exibição do registro no Pod mysql-2 confirma que a replicação MySQL estava funcional no ambiente testado, permitindo que dados inseridos no Pod primário fossem consultados em uma réplica.
+
+Entretanto, como a replicação MySQL utilizada nesse tipo de cenário geralmente ocorre de forma assíncrona, este teste não garante ausência total de perda de dados em caso de falha abrupta do nó primário antes da sincronização completa com as réplicas.
+
+Portanto, o resultado valida o funcionamento da replicação no cenário observado, mas não substitui testes adicionais de failover, consistência, backup e recuperação para uso em ambientes de produção.
+
+## Demonstração em Vídeo
+
+Além das evidências em imagem, foi produzido um vídeo demonstrando a execução prática do ambiente, incluindo a exclusão/recriação de Pod e a validação do comportamento do StatefulSet.
+
+[Assistir demonstração do teste](docs/evidencias/teste-delete-pod-mysql.mp4)
+
+> Demonstração prática do comportamento do cluster diante da remoção de um Pod MySQL, evidenciando a recriação automática pelo Kubernetes e a manutenção da identidade do Pod pelo StatefulSet.
