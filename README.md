@@ -302,6 +302,4 @@ Portanto, o resultado valida o funcionamento da replicação no cenário observa
 
 Além das evidências em imagem, foi produzido um vídeo demonstrando a execução prática do ambiente, incluindo a exclusão/recriação de Pod e a validação do comportamento do StatefulSet.
 
-[Assistir demonstração do teste](docs/evidencias/teste-delete-pod-mysql.mp4)
-
-> Demonstração prática do comportamento do cluster diante da remoção de um Pod MySQL, evidenciando a recriação automática pelo Kubernetes e a manutenção da identidade do Pod pelo StatefulSet.
+[Assistir demonstração do teste](https://youtu.be/71WfeD1dJKw)
